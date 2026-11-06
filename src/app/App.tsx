@@ -84,7 +84,7 @@ export const App = () => {
 
   return (
     <div style={{ padding: '2rem', fontFamily: 'monospace', maxWidth: '800px' }}>
-      <h2>RetryStorm — Engine Foundation Preview</h2>
+      <h2>Dist Sim — Engine Foundation Preview</h2>
       <p style={{ color: '#666' }}>
         Healthy baseline traffic preview (Seed: 42 | Concurrency: 4 | Mean Service: 80ms | Arrival: 20 rps)
       </p>

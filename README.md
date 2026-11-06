@@ -1,14 +1,14 @@
-# RetryStorm
+# Dist Sim
 
 An interactive reliability engineering playground for exploring how latency, timeouts, retries, and service capacity interact.
 
-RetryStorm turns abstract distributed-systems failure modes into something you can see, inspect, and reason about. Instead of relying on approximations or complex cloud setups, it runs a 100% client-side, deterministic discrete-event simulation engine in the browser.
+Dist Sim turns abstract distributed-systems failure modes into something you can see, inspect, and reason about. Instead of relying on approximations or complex cloud setups, it runs a 100% client-side, deterministic discrete-event simulation engine in the browser.
 
 ---
 
 ## Architecture Overview
 
-RetryStorm separates the simulation engine from the presentation layer:
+Dist Sim separates the simulation engine from the presentation layer:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
