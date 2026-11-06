@@ -76,6 +76,8 @@ Dist Sim strictly decouples the simulation mechanics from the presentation layer
   - Finite worker concurrency pool and FIFO queue.
   - Comprehensive unit test suite (12/12 passing).
   - Live baseline inspector with real-time speed control (`0.1x` to `3.0x`), step-forward, and pause/reset.
+  - <img width="895" height="485" alt="Screenshot 2026-11-06 at 4 54 25 AM" src="https://github.com/user-attachments/assets/974f9a0d-10d5-4f6c-b0f3-14ad9c653fb9" />
+
 - [ ] **Next Up (Resilience & Scenarios):**
   - Per-attempt client deadlines, timeout events, and late-work tracking.
   - Retry policies (Immediate, Exponential, Full Jitter) and attempt bounds.
