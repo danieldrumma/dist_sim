@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Production build
+dist/
+
+# Logs and environment
+*.log
+.DS_Store
+
+# Internal/Specification documents
+RETRYSTORM_MVP_SPEC.md
+.gemini/
