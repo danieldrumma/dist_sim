@@ -1,3 +1,4 @@
+import { BreakerState, CircuitBreakerConfig } from './circuitBreaker';
 import { RetryPolicyConfig } from './retryPolicy';
 
 export enum EventPriority {
@@ -99,6 +100,12 @@ export type SimulationEvent =
       healthSetting: SystemHealthSetting;
     }
   | {
+      type: 'BREAKER_COOLDOWN_EXPIRED';
+      atMs: number;
+      priority: EventPriority.BREAKER_COOLDOWN_EXPIRED;
+      insertionSeq: number;
+    }
+  | {
       type: 'METRICS_SAMPLE';
       atMs: number;
       priority: EventPriority.METRICS_SAMPLE;
@@ -117,6 +124,7 @@ export interface EngineConfig {
   meanServiceMs: number;
   timeoutMs: number;
   retryPolicy: RetryPolicyConfig;
+  circuitBreaker?: CircuitBreakerConfig;
   scheduledPhases?: ScheduledHealthPhase[];
   burstArrivals?: { atMs: number; count: number }; // For Scenario 2 (burst of 48 requests)
 }
@@ -136,5 +144,7 @@ export interface EngineSnapshot {
   succeededRequestsCount: number;
   failedRequestsCount: number;
   serviceErrorCount: number;
+  shortCircuitedCount: number;
+  breakerState: BreakerState;
   currentHealthSetting: SystemHealthSetting;
 }

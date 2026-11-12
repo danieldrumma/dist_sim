@@ -1,3 +1,4 @@
+import { CircuitBreaker, createCircuitBreaker } from './circuitBreaker';
 import { PriorityQueue } from './priorityQueue';
 import { SimulationRandom } from './random';
 import { calculateRetryDelayMs } from './retryPolicy';
@@ -17,6 +18,7 @@ export class SimulationEngine {
   private currentTimeMs: number = 0;
   private pq: PriorityQueue = new PriorityQueue();
   private rng: SimulationRandom;
+  private breaker: CircuitBreaker;
   private insertionSeqCounter: number = 0;
 
   private logicalRequests: Map<number, LogicalRequest> = new Map();
@@ -35,6 +37,7 @@ export class SimulationEngine {
   private succeededRequestsCount: number = 0;
   private failedRequestsCount: number = 0;
   private serviceErrorCount: number = 0;
+  private shortCircuitedCount: number = 0;
 
   private currentHealthSetting: SystemHealthSetting = {
     latencyMultiplier: 1.0,
@@ -44,6 +47,9 @@ export class SimulationEngine {
   constructor(config: EngineConfig) {
     this.config = config;
     this.rng = new SimulationRandom(config.seed);
+    this.breaker = createCircuitBreaker(
+      config.circuitBreaker ?? { enabled: false }
+    );
 
     // Initialize worker pool
     for (let i = 0; i < config.concurrency; i++) {
@@ -126,6 +132,8 @@ export class SimulationEngine {
       succeededRequestsCount: this.succeededRequestsCount,
       failedRequestsCount: this.failedRequestsCount,
       serviceErrorCount: this.serviceErrorCount,
+      shortCircuitedCount: this.shortCircuitedCount,
+      breakerState: this.breaker.getState(),
       currentHealthSetting: { ...this.currentHealthSetting },
     };
   };
@@ -162,6 +170,11 @@ export class SimulationEngine {
           healthSetting: SystemHealthSetting;
         }
       | {
+          type: 'BREAKER_COOLDOWN_EXPIRED';
+          atMs: number;
+          priority: EventPriority.BREAKER_COOLDOWN_EXPIRED;
+        }
+      | {
           type: 'METRICS_SAMPLE';
           atMs: number;
           priority: EventPriority.METRICS_SAMPLE;
@@ -191,6 +204,9 @@ export class SimulationEngine {
         break;
       case 'HEALTH_SETTING_CHANGE':
         this.currentHealthSetting = { ...event.healthSetting };
+        break;
+      case 'BREAKER_COOLDOWN_EXPIRED':
+        this.breaker.handleCooldownExpired();
         break;
       default:
         break;
@@ -228,10 +244,37 @@ export class SimulationEngine {
   ): void => {
     const request = this.logicalRequests.get(logicalRequestId);
     if (!request || request.state !== 'pending') {
-      // If the request already succeeded or was cancelled, do not dispatch
       return;
     }
 
+    // Circuit Breaker check
+    const check = this.breaker.canAttempt();
+    if (!check.allowed) {
+      // Breaker is OPEN (or HALF_OPEN probe in-flight): short-circuit!
+      const attemptId = this.nextAttemptId++;
+      const rejectedAttempt: Attempt = {
+        id: attemptId,
+        logicalRequestId,
+        attemptNumber,
+        dispatchedAtMs: this.currentTimeMs,
+        deadlineAtMs: this.currentTimeMs,
+        clientState: 'rejected',
+        serverState: 'not_admitted',
+        isRetry,
+        isHalfOpenProbe: false,
+      };
+      this.attempts.set(attemptId, rejectedAttempt);
+
+      this.shortCircuitedCount++;
+      // Short-circuits fail fast and are NOT retried
+      request.state = 'failed';
+      request.failureReason = 'circuit_open';
+      request.completedAtMs = this.currentTimeMs;
+      this.failedRequestsCount++;
+      return;
+    }
+
+    // Attempt admitted by circuit breaker
     const attemptId = this.nextAttemptId++;
     const deadlineAtMs = this.currentTimeMs + this.config.timeoutMs;
 
@@ -244,7 +287,7 @@ export class SimulationEngine {
       clientState: 'waiting',
       serverState: 'queued',
       isRetry,
-      isHalfOpenProbe: false,
+      isHalfOpenProbe: check.isHalfOpenProbe,
     };
     this.attempts.set(attemptId, attempt);
 
@@ -274,6 +317,16 @@ export class SimulationEngine {
     attempt.clientState = 'timed_out';
     this.timedOutAttemptsCount++;
 
+    // Record failure in circuit breaker
+    const tripped = this.breaker.recordFailure();
+    if (tripped) {
+      this.scheduleEvent({
+        type: 'BREAKER_COOLDOWN_EXPIRED',
+        atMs: this.currentTimeMs + this.breaker.getOpenDurationMs(),
+        priority: EventPriority.BREAKER_COOLDOWN_EXPIRED,
+      });
+    }
+
     const request = this.logicalRequests.get(attempt.logicalRequestId);
     if (!request || request.state !== 'pending') {
       return;
@@ -300,13 +353,15 @@ export class SimulationEngine {
       attempt.serverState = 'completed';
 
       if (attempt.clientState === 'timed_out') {
-        // Late / wasted work: client already timed out
+        // Late / wasted work
         this.lateCompletionCount++;
       } else if (attempt.clientState === 'waiting') {
         const request = this.logicalRequests.get(attempt.logicalRequestId);
 
         if (succeeded) {
-          // Successful response
+          // Success: reset consecutive breaker failures or close half-open
+          this.breaker.recordSuccess();
+
           attempt.clientState = 'succeeded';
           if (request && request.state === 'pending') {
             request.state = 'succeeded';
@@ -314,9 +369,19 @@ export class SimulationEngine {
             this.succeededRequestsCount++;
           }
         } else {
-          // 5xx service failure
+          // 5xx service failure: record failure in circuit breaker
           attempt.clientState = 'failed';
           this.serviceErrorCount++;
+
+          const tripped = this.breaker.recordFailure();
+          if (tripped) {
+            this.scheduleEvent({
+              type: 'BREAKER_COOLDOWN_EXPIRED',
+              atMs: this.currentTimeMs + this.breaker.getOpenDurationMs(),
+              priority: EventPriority.BREAKER_COOLDOWN_EXPIRED,
+            });
+          }
+
           if (request && request.state === 'pending') {
             this.evaluateRetryOrFailure(request, 'service_error');
           }
@@ -336,7 +401,7 @@ export class SimulationEngine {
     const canRetry = policy.mode !== 'none' && request.attemptsCreated < policy.maxAttempts;
 
     if (canRetry) {
-      const retryNumber = request.attemptsCreated; // 1 for first retry, 2 for second
+      const retryNumber = request.attemptsCreated;
       request.attemptsCreated++;
 
       const delayMs = calculateRetryDelayMs(policy, retryNumber, this.rng.get('jitter'));
@@ -354,7 +419,6 @@ export class SimulationEngine {
         });
       }
     } else {
-      // Terminal failure
       request.state = 'failed';
       request.failureReason = failureReason;
       request.completedAtMs = this.currentTimeMs;
@@ -372,12 +436,10 @@ export class SimulationEngine {
       const attemptId = this.fifoQueue.shift()!;
       const attempt = this.attempts.get(attemptId)!;
 
-      // Sample service duration with active latencyMultiplier
       const baseMean = this.config.meanServiceMs * this.currentHealthSetting.latencyMultiplier;
       const durationMs = this.rng.get('service').nextBoundedUniform(baseMean);
       const finishesAtMs = this.currentTimeMs + durationMs;
 
-      // Sample 5xx failure probability
       const hasFailure = this.rng
         .get('failure')
         .nextBoolean(this.currentHealthSetting.failureProbability);

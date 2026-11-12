@@ -142,23 +142,47 @@ export const App = () => {
         </div>
       </div>
 
-      {/* Health Status Indicator */}
-      <div
-        style={{
-          padding: '0.6rem 1rem',
-          borderRadius: '4px',
-          marginBottom: '1rem',
-          background: isOutage ? '#ffebee' : isDegraded ? '#fff3e0' : '#e8f5e9',
-          color: isOutage ? '#c62828' : isDegraded ? '#ef6c00' : '#2e7d32',
-          fontWeight: 'bold',
-        }}
-      >
-        System Health:{' '}
-        {isOutage
-          ? 'OUTAGE (100% 5xx Failure Active)'
-          : isDegraded
-            ? `DEGRADED (${snapshot.currentHealthSetting.latencyMultiplier}x Latency Active)`
-            : 'HEALTHY'}
+      {/* Health & Breaker Status Indicator */}
+      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+        <div
+          style={{
+            flex: 1,
+            padding: '0.6rem 1rem',
+            borderRadius: '4px',
+            background: isOutage ? '#ffebee' : isDegraded ? '#fff3e0' : '#e8f5e9',
+            color: isOutage ? '#c62828' : isDegraded ? '#ef6c00' : '#2e7d32',
+            fontWeight: 'bold',
+          }}
+        >
+          System Health:{' '}
+          {isOutage
+            ? 'OUTAGE (100% 5xx Failure Active)'
+            : isDegraded
+              ? `DEGRADED (${snapshot.currentHealthSetting.latencyMultiplier}x Latency Active)`
+              : 'HEALTHY'}
+        </div>
+
+        <div
+          style={{
+            padding: '0.6rem 1rem',
+            borderRadius: '4px',
+            fontWeight: 'bold',
+            background:
+              snapshot.breakerState === 'OPEN'
+                ? '#ffebee'
+                : snapshot.breakerState === 'HALF_OPEN'
+                  ? '#fff8e1'
+                  : '#e8f5e9',
+            color:
+              snapshot.breakerState === 'OPEN'
+                ? '#c62828'
+                : snapshot.breakerState === 'HALF_OPEN'
+                  ? '#f57f17'
+                  : '#2e7d32',
+          }}
+        >
+          Breaker: {snapshot.breakerState}
+        </div>
       </div>
 
       {/* Metrics Card */}
@@ -180,6 +204,9 @@ export const App = () => {
         </div>
         <div>
           <strong>5xx Service Errors:</strong> {snapshot.serviceErrorCount}
+        </div>
+        <div>
+          <strong>Short-Circuited (Rejected):</strong> {snapshot.shortCircuitedCount}
         </div>
         <div>
           <strong>Timed-Out Attempts:</strong> {snapshot.timedOutAttemptsCount}
