@@ -25,7 +25,14 @@ export class SimulationEngine {
 
   private nextLogicalRequestId: number = 1;
   private nextAttemptId: number = 1;
+
+  // Outcome and event counters
   private completedServiceCount: number = 0;
+  private timedOutAttemptsCount: number = 0;
+  private lateCompletionCount: number = 0;
+  private retryAttemptsCount: number = 0;
+  private succeededRequestsCount: number = 0;
+  private failedRequestsCount: number = 0;
 
   private activeProfile: ServiceProfile;
 
@@ -87,6 +94,11 @@ export class SimulationEngine {
       totalArrivals: this.logicalRequests.size,
       totalAttempts: this.attempts.size,
       completedServiceCount: this.completedServiceCount,
+      timedOutAttemptsCount: this.timedOutAttemptsCount,
+      lateCompletionCount: this.lateCompletionCount,
+      retryAttemptsCount: this.retryAttemptsCount,
+      succeededRequestsCount: this.succeededRequestsCount,
+      failedRequestsCount: this.failedRequestsCount,
     };
   };
 
@@ -136,6 +148,9 @@ export class SimulationEngine {
       case 'SERVICE_COMPLETE':
         this.handleServiceComplete(event.workerId, event.attemptId, event.succeeded);
         break;
+      case 'ATTEMPT_TIMEOUT':
+        this.handleAttemptTimeout(event.attemptId);
+        break;
       default:
         break;
     }
@@ -151,24 +166,8 @@ export class SimulationEngine {
     };
     this.logicalRequests.set(reqId, request);
 
-    // Create the first attempt
-    const attemptId = this.nextAttemptId++;
-    const attempt: Attempt = {
-      id: attemptId,
-      logicalRequestId: reqId,
-      attemptNumber: 1,
-      dispatchedAtMs: this.currentTimeMs,
-      deadlineAtMs: Infinity, // Timeouts not enabled in baseline task
-      clientState: 'waiting',
-      serverState: 'queued',
-      isRetry: false,
-      isHalfOpenProbe: false,
-    };
-    this.attempts.set(attemptId, attempt);
-
-    // Push to FIFO queue and attempt drain
-    this.fifoQueue.push(attemptId);
-    this.drainQueue();
+    // Dispatch the first attempt
+    this.dispatchAttempt(reqId, 1, false);
 
     // Schedule next logical arrival using Poisson inter-arrival
     if (this.config.arrivalRateRps > 0) {
@@ -178,6 +177,80 @@ export class SimulationEngine {
         atMs: this.currentTimeMs + deltaMs,
         priority: EventPriority.LOGICAL_ARRIVAL,
       });
+    }
+  };
+
+  private dispatchAttempt = (
+    logicalRequestId: number,
+    attemptNumber: number,
+    isRetry: boolean
+  ): void => {
+    const attemptId = this.nextAttemptId++;
+    const deadlineAtMs = this.currentTimeMs + this.config.timeoutMs;
+
+    const attempt: Attempt = {
+      id: attemptId,
+      logicalRequestId,
+      attemptNumber,
+      dispatchedAtMs: this.currentTimeMs,
+      deadlineAtMs,
+      clientState: 'waiting',
+      serverState: 'queued',
+      isRetry,
+      isHalfOpenProbe: false,
+    };
+    this.attempts.set(attemptId, attempt);
+
+    if (isRetry) {
+      this.retryAttemptsCount++;
+    }
+
+    // Schedule the client timeout deadline
+    this.scheduleEvent({
+      type: 'ATTEMPT_TIMEOUT',
+      atMs: deadlineAtMs,
+      priority: EventPriority.ATTEMPT_TIMEOUT,
+      attemptId,
+    });
+
+    // Enqueue for server processing and attempt drain
+    this.fifoQueue.push(attemptId);
+    this.drainQueue();
+  };
+
+  private handleAttemptTimeout = (attemptId: number): void => {
+    const attempt = this.attempts.get(attemptId);
+    if (!attempt || attempt.clientState !== 'waiting') {
+      // Already completed on time (or already resolved)
+      return;
+    }
+
+    // Mark client state as timed out
+    attempt.clientState = 'timed_out';
+    this.timedOutAttemptsCount++;
+
+    // Crucial: Server work is NOT cancelled!
+    // The attempt remains in fifoQueue or actively processing on its worker.
+
+    const request = this.logicalRequests.get(attempt.logicalRequestId);
+    if (!request || request.state !== 'pending') {
+      return;
+    }
+
+    // Evaluate retry policy
+    const canRetry =
+      this.config.retryPolicy === 'immediate' &&
+      request.attemptsCreated < this.config.maxAttempts;
+
+    if (canRetry) {
+      request.attemptsCreated++;
+      this.dispatchAttempt(request.id, request.attemptsCreated, true);
+    } else {
+      // No more retries allowed -> terminal failure
+      request.state = 'failed';
+      request.failureReason = 'timeout';
+      request.completedAtMs = this.currentTimeMs;
+      this.failedRequestsCount++;
     }
   };
 
@@ -197,12 +270,20 @@ export class SimulationEngine {
     const attempt = this.attempts.get(attemptId);
     if (attempt) {
       attempt.serverState = 'completed';
-      attempt.clientState = 'succeeded';
 
-      const request = this.logicalRequests.get(attempt.logicalRequestId);
-      if (request && request.state === 'pending') {
-        request.state = 'succeeded';
-        request.completedAtMs = this.currentTimeMs;
+      if (attempt.clientState === 'timed_out') {
+        // Late work / wasted work! The client already gave up on this attempt.
+        this.lateCompletionCount++;
+      } else if (attempt.clientState === 'waiting') {
+        // On-time timely completion!
+        attempt.clientState = 'succeeded';
+
+        const request = this.logicalRequests.get(attempt.logicalRequestId);
+        if (request && request.state === 'pending') {
+          request.state = 'succeeded';
+          request.completedAtMs = this.currentTimeMs;
+          this.succeededRequestsCount++;
+        }
       }
     }
 
@@ -250,7 +331,6 @@ export class SimulationEngine {
   };
 
   private findIdleWorker = (): WorkerSlot | undefined => {
-    // Pick lowest-index idle worker for deterministic visual behavior
     for (const w of this.workers) {
       if (!w.busy) {
         return w;

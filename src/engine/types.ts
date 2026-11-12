@@ -95,11 +95,16 @@ export interface ServiceProfile {
   failureProbability: number;
 }
 
+export type RetryPolicyType = 'none' | 'immediate';
+
 export interface EngineConfig {
   seed: number;
   arrivalRateRps: number;
   concurrency: number;
   meanServiceMs: number;
+  timeoutMs: number;
+  retryPolicy: RetryPolicyType;
+  maxAttempts: number;
 }
 
 export interface EngineSnapshot {
@@ -111,4 +116,9 @@ export interface EngineSnapshot {
   totalArrivals: number;
   totalAttempts: number;
   completedServiceCount: number;
+  timedOutAttemptsCount: number;
+  lateCompletionCount: number;
+  retryAttemptsCount: number;
+  succeededRequestsCount: number;
+  failedRequestsCount: number;
 }

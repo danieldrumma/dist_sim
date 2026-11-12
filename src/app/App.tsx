@@ -16,6 +16,9 @@ export const App = () => {
       arrivalRateRps: 20,
       concurrency: 4,
       meanServiceMs: 80,
+      timeoutMs: 120,
+      retryPolicy: 'immediate',
+      maxAttempts: 3,
     });
     setSnapshot(engineRef.current.getSnapshot());
   };
@@ -113,8 +116,11 @@ export const App = () => {
       <div style={{ background: '#f4f4f4', padding: '1rem', borderRadius: '6px' }}>
         <div><strong>Simulated Time:</strong> {Math.round(snapshot.timeMs)} ms</div>
         <div><strong>Total Arrivals:</strong> {snapshot.totalArrivals}</div>
-        <div><strong>Total Attempts:</strong> {snapshot.totalAttempts}</div>
-        <div><strong>Completed Services:</strong> {snapshot.completedServiceCount}</div>
+        <div><strong>Total Attempts:</strong> {snapshot.totalAttempts} ({snapshot.retryAttemptsCount} retries)</div>
+        <div><strong>Succeeded Requests:</strong> {snapshot.succeededRequestsCount}</div>
+        <div><strong>Failed Requests:</strong> {snapshot.failedRequestsCount}</div>
+        <div><strong>Timed-Out Attempts:</strong> {snapshot.timedOutAttemptsCount}</div>
+        <div><strong>Late / Wasted Work:</strong> {snapshot.lateCompletionCount}</div>
         <div><strong>FIFO Queue Depth:</strong> {snapshot.queueDepth}</div>
         <div><strong>Active Workers:</strong> {snapshot.activeWorkers} / {snapshot.workers.length}</div>
       </div>
