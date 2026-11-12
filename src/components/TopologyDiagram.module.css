@@ -1,0 +1,309 @@
+.container {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  margin: 0 1.5rem;
+  padding: 1.25rem 1.5rem;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.title {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.dotInitial {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-cyan);
+}
+
+.dotRetry {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-warning);
+}
+
+.dotWasted {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--color-danger);
+}
+
+/* 3-Column Diagram Grid */
+.diagramGrid {
+  display: grid;
+  grid-template-columns: 240px 1fr 480px;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+@media (max-width: 1024px) {
+  .diagramGrid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+}
+
+/* Service Card Styles */
+.nodeCard {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  transition: border-color 0.2s ease;
+}
+
+.nodeCardHealthy {
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.nodeCardDegraded {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.nodeCardOutage {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.nodeName {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.nodeRole {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.breakerBadge {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.badgeClosed {
+  background: var(--color-healthy-bg);
+  color: var(--color-healthy);
+  border: 1px solid var(--color-healthy-border);
+}
+
+.badgeHalfOpen {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+}
+
+.badgeOpen {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger-border);
+}
+
+/* Section styling inside cards */
+.metricSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.sectionLabel {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.bigValue {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.outcomesRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.2rem;
+}
+
+.outcomeItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.outcomeSuccess {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-healthy);
+}
+
+.outcomeFail {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-danger);
+}
+
+/* Transit SVG Pipe */
+.transitPipeContainer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-height: 80px;
+}
+
+.transitSvg {
+  width: 100%;
+  height: 48px;
+  overflow: visible;
+}
+
+.transitLabel {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+/* FIFO Tube */
+.queueTube {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  gap: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.queueBlock {
+  width: 10px;
+  height: 18px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  background: var(--color-cyan);
+  opacity: 0.85;
+}
+
+.queueBlockWarning {
+  background: var(--color-warning);
+}
+
+.queueEmptyText {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-style: italic;
+  margin: 0 auto;
+}
+
+.queueOverflowText {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-warning);
+  margin-left: 0.35rem;
+}
+
+/* Worker Grid */
+.workersGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.4rem;
+}
+
+.workerBox {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0.45rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  min-height: 42px;
+  transition: all 0.15s ease;
+}
+
+.workerBusy {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.workerOutage {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.workerId {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.workerStatus {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.workerIdle {
+  color: var(--text-dim);
+  font-weight: 400;
+}
