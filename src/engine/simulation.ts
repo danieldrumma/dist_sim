@@ -1,4 +1,5 @@
 import { CircuitBreaker, createCircuitBreaker } from './circuitBreaker';
+import { createMetricsCollector, MetricsCollector } from './metrics';
 import { PriorityQueue } from './priorityQueue';
 import { SimulationRandom } from './random';
 import { calculateRetryDelayMs } from './retryPolicy';
@@ -19,6 +20,7 @@ export class SimulationEngine {
   private pq: PriorityQueue = new PriorityQueue();
   private rng: SimulationRandom;
   private breaker: CircuitBreaker;
+  private metrics: MetricsCollector = createMetricsCollector(250, 1000);
   private insertionSeqCounter: number = 0;
 
   private logicalRequests: Map<number, LogicalRequest> = new Map();
@@ -38,6 +40,9 @@ export class SimulationEngine {
   private failedRequestsCount: number = 0;
   private serviceErrorCount: number = 0;
   private shortCircuitedCount: number = 0;
+  private transitParticles: { attemptId: number; dispatchedAtMs: number; isRetry: boolean; rejected: boolean }[] = [];
+  private pendingLogs: import('./types').EngineLogEntry[] = [];
+  private logSeq: number = 0;
 
   private currentHealthSetting: SystemHealthSetting = {
     latencyMultiplier: 1.0,
@@ -90,6 +95,13 @@ export class SimulationEngine {
         });
       }
     }
+
+    // Schedule the first metrics sample event at 250ms
+    this.scheduleEvent({
+      type: 'METRICS_SAMPLE',
+      atMs: 250,
+      priority: EventPriority.METRICS_SAMPLE,
+    });
   }
 
   public advanceTo = (targetTimeMs: number): void => {
@@ -109,6 +121,30 @@ export class SimulationEngine {
     }
 
     this.currentTimeMs = targetTimeMs;
+  };
+
+  public drainRecentEvents = (): import('./types').EngineLogEntry[] => {
+    const drained = this.pendingLogs;
+    this.pendingLogs = [];
+    return drained;
+  };
+
+  private emitLog = (
+    category: import('./types').EngineLogEntry['category'],
+    level: import('./types').LogLevel,
+    message: string
+  ): void => {
+    // Cap buffer to avoid memory leak if UI doesn't drain
+    if (this.pendingLogs.length > 200) {
+      this.pendingLogs.shift();
+    }
+    this.pendingLogs.push({
+      id: ++this.logSeq,
+      timeMs: this.currentTimeMs,
+      category,
+      level,
+      message,
+    });
   };
 
   public getSnapshot = (): EngineSnapshot => {
@@ -135,6 +171,10 @@ export class SimulationEngine {
       shortCircuitedCount: this.shortCircuitedCount,
       breakerState: this.breaker.getState(),
       currentHealthSetting: { ...this.currentHealthSetting },
+      metricSamples: this.metrics.getSamples(),
+      recentTransitParticles: this.transitParticles.filter(
+        (p) => this.currentTimeMs - p.dispatchedAtMs <= 600
+      ),
     };
   };
 
@@ -204,9 +244,22 @@ export class SimulationEngine {
         break;
       case 'HEALTH_SETTING_CHANGE':
         this.currentHealthSetting = { ...event.healthSetting };
+        this.emitLog(
+          'FAULT',
+          event.healthSetting.latencyMultiplier > 1 || event.healthSetting.failureProbability > 0
+            ? 'warn'
+            : 'info',
+          `Health changed: ${event.healthSetting.latencyMultiplier}x Latency, ${(
+            event.healthSetting.failureProbability * 100
+          ).toFixed(0)}% 5xx`
+        );
         break;
       case 'BREAKER_COOLDOWN_EXPIRED':
         this.breaker.handleCooldownExpired();
+        this.emitLog('BREAKER', 'info', 'Cooldown expired ➔ State shifted to HALF_OPEN (Canary probe armed)');
+        break;
+      case 'METRICS_SAMPLE':
+        this.handleMetricsSample();
         break;
       default:
         break;
@@ -222,6 +275,8 @@ export class SimulationEngine {
       attemptsCreated: 1,
     };
     this.logicalRequests.set(reqId, request);
+    this.metrics.recordArrival(this.currentTimeMs);
+    this.emitLog('INGRESS', 'info', `Logical Request #${reqId} admitted`);
 
     // Dispatch Attempt #1
     this.dispatchAttempt(reqId, 1, false);
@@ -265,8 +320,16 @@ export class SimulationEngine {
       };
       this.attempts.set(attemptId, rejectedAttempt);
 
+      this.transitParticles.push({
+        attemptId,
+        dispatchedAtMs: this.currentTimeMs,
+        isRetry,
+        rejected: true,
+      });
+      this.pruneTransitParticles();
+
       this.shortCircuitedCount++;
-      // Short-circuits fail fast and are NOT retried
+      this.emitLog('REJECT', 'error', `Short-circuited Request #${logicalRequestId} (Breaker OPEN, 0ms latency)`);
       request.state = 'failed';
       request.failureReason = 'circuit_open';
       request.completedAtMs = this.currentTimeMs;
@@ -291,9 +354,22 @@ export class SimulationEngine {
     };
     this.attempts.set(attemptId, attempt);
 
+    this.transitParticles.push({
+      attemptId,
+      dispatchedAtMs: this.currentTimeMs,
+      isRetry,
+      rejected: false,
+    });
+    this.pruneTransitParticles();
+
     if (isRetry) {
       this.retryAttemptsCount++;
+      this.emitLog('RETRY', 'warn', `Retry Attempt #${attemptId} sent for Request #${logicalRequestId}`);
+    } else {
+      this.emitLog('DISPATCH', 'info', `Attempt #${attemptId} dispatched for Request #${logicalRequestId}`);
     }
+
+    this.metrics.recordAttempt(this.currentTimeMs, isRetry);
 
     // Schedule timeout deadline
     this.scheduleEvent({
@@ -316,10 +392,11 @@ export class SimulationEngine {
 
     attempt.clientState = 'timed_out';
     this.timedOutAttemptsCount++;
+    this.emitLog('TIMEOUT', 'warn', `Attempt #${attemptId} timed out (${this.config.timeoutMs}ms deadline exceeded)`);
 
-    // Record failure in circuit breaker
     const tripped = this.breaker.recordFailure();
     if (tripped) {
+      this.emitLog('BREAKER', 'error', `Circuit breaker tripped to OPEN (consecutive threshold reached)`);
       this.scheduleEvent({
         type: 'BREAKER_COOLDOWN_EXPIRED',
         atMs: this.currentTimeMs + this.breaker.getOpenDurationMs(),
@@ -353,28 +430,29 @@ export class SimulationEngine {
       attempt.serverState = 'completed';
 
       if (attempt.clientState === 'timed_out') {
-        // Late / wasted work
         this.lateCompletionCount++;
+        this.emitLog('WASTED', 'warn', `Worker #${workerId} finished timed-out Attempt #${attemptId} (Wasted Server Work)`);
       } else if (attempt.clientState === 'waiting') {
         const request = this.logicalRequests.get(attempt.logicalRequestId);
 
         if (succeeded) {
-          // Success: reset consecutive breaker failures or close half-open
           this.breaker.recordSuccess();
 
           attempt.clientState = 'succeeded';
+          this.emitLog('COMPLETE', 'success', `Worker #${workerId} completed Attempt #${attemptId} (Success)`);
           if (request && request.state === 'pending') {
             request.state = 'succeeded';
             request.completedAtMs = this.currentTimeMs;
             this.succeededRequestsCount++;
           }
         } else {
-          // 5xx service failure: record failure in circuit breaker
           attempt.clientState = 'failed';
           this.serviceErrorCount++;
+          this.emitLog('COMPLETE', 'error', `Worker #${workerId} completed Attempt #${attemptId} with 5xx error`);
 
           const tripped = this.breaker.recordFailure();
           if (tripped) {
+            this.emitLog('BREAKER', 'error', `Circuit breaker tripped to OPEN (consecutive 5xx threshold reached)`);
             this.scheduleEvent({
               type: 'BREAKER_COOLDOWN_EXPIRED',
               atMs: this.currentTimeMs + this.breaker.getOpenDurationMs(),
@@ -391,6 +469,29 @@ export class SimulationEngine {
 
     this.completedServiceCount++;
     this.drainQueue();
+  };
+
+  private handleMetricsSample = (): void => {
+    let activeWorkers = 0;
+    for (const w of this.workers) {
+      if (w.busy) activeWorkers++;
+    }
+
+    this.metrics.takeSample(
+      this.currentTimeMs,
+      this.fifoQueue.length,
+      activeWorkers,
+      this.workers.length,
+      this.lateCompletionCount,
+      this.shortCircuitedCount
+    );
+
+    // Schedule next 250ms periodic metrics sample
+    this.scheduleEvent({
+      type: 'METRICS_SAMPLE',
+      atMs: this.currentTimeMs + 250,
+      priority: EventPriority.METRICS_SAMPLE,
+    });
   };
 
   private evaluateRetryOrFailure = (
@@ -459,6 +560,13 @@ export class SimulationEngine {
         attemptId,
         succeeded: !hasFailure,
       });
+    }
+  };
+
+  private pruneTransitParticles = (): void => {
+    const cutoff = this.currentTimeMs - 1000;
+    while (this.transitParticles.length > 0 && this.transitParticles[0].dispatchedAtMs < cutoff) {
+      this.transitParticles.shift();
     }
   };
 

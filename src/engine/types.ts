@@ -1,4 +1,5 @@
 import { BreakerState, CircuitBreakerConfig } from './circuitBreaker';
+import { MetricSample } from './metrics';
 import { RetryPolicyConfig } from './retryPolicy';
 
 export enum EventPriority {
@@ -53,6 +54,23 @@ export interface WorkerSlot {
   currentAttemptId?: number;
   startedAtMs?: number;
   finishesAtMs?: number;
+}
+
+export interface TransitParticle {
+  attemptId: number;
+  dispatchedAtMs: number;
+  isRetry: boolean;
+  rejected: boolean;
+}
+
+export type LogLevel = 'info' | 'warn' | 'error' | 'success';
+
+export interface EngineLogEntry {
+  id: number;
+  timeMs: number;
+  category: 'INGRESS' | 'DISPATCH' | 'COMPLETE' | 'TIMEOUT' | 'RETRY' | 'WASTED' | 'FAULT' | 'BREAKER' | 'REJECT';
+  level: LogLevel;
+  message: string;
 }
 
 export interface SystemHealthSetting {
@@ -147,4 +165,6 @@ export interface EngineSnapshot {
   shortCircuitedCount: number;
   breakerState: BreakerState;
   currentHealthSetting: SystemHealthSetting;
+  metricSamples: MetricSample[];
+  recentTransitParticles: TransitParticle[];
 }
