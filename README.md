@@ -76,13 +76,15 @@ Dist Sim strictly decouples the simulation mechanics from the presentation layer
   - Finite worker concurrency pool and FIFO queue.
   - Comprehensive unit test suite (12/12 passing).
   - Live baseline inspector with real-time speed control (`0.1x` to `3.0x`), step-forward, and pause/reset.
-  - <img width="895" height="485" alt="Screenshot 2026-11-06 at 4 54 25 AM" src="https://github.com/user-attachments/assets/974f9a0d-10d5-4f6c-b0f3-14ad9c653fb9" />
+  - <img width="895" height="485" alt="debug ui" src="https://github.com/user-attachments/assets/974f9a0d-10d5-4f6c-b0f3-14ad9c653fb9" />
 
-- [ ] **Next Up (Resilience & Scenarios):**
+- [x] **Next Up (Resilience & Scenarios):**
   - Per-attempt client deadlines, timeout events, and late-work tracking.
   - Retry policies (Immediate, Exponential, Full Jitter) and attempt bounds.
   - Circuit breaker state machine (`CLOSED`, `OPEN`, `HALF_OPEN`).
   - Animated SVG topology diagram and time-series queue/rate charts.
+<img width="1529" height="828" alt="ui v1 full" src="https://github.com/user-attachments/assets/d9aba144-77c7-402d-b810-73921564414a" />
+<img width="1495" height="405" alt="ui v1 settings" src="https://github.com/user-attachments/assets/fdb65ec2-cffd-408d-b45e-beb61fd7c811" />
 
 ---
 
