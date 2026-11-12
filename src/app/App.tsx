@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createSimulation, SimulationEngine } from '../engine/simulation';
 import { EngineSnapshot } from '../engine/types';
+import { SCENARIOS, ScenarioDefinition } from '../engine/scenarios';
 
 export const App = () => {
+  const [selectedScenario, setSelectedScenario] = useState<ScenarioDefinition>(SCENARIOS[0]);
   const [snapshot, setSnapshot] = useState<EngineSnapshot | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(1);
@@ -10,22 +12,14 @@ export const App = () => {
   const engineRef = useRef<SimulationEngine | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
 
-  const initEngine = () => {
-    engineRef.current = createSimulation({
-      seed: 42,
-      arrivalRateRps: 20,
-      concurrency: 4,
-      meanServiceMs: 80,
-      timeoutMs: 120,
-      retryPolicy: 'immediate',
-      maxAttempts: 3,
-    });
+  const initEngine = (scenario: ScenarioDefinition = selectedScenario) => {
+    engineRef.current = createSimulation(scenario.config);
     setSnapshot(engineRef.current.getSnapshot());
   };
 
   useEffect(() => {
-    initEngine();
-  }, []);
+    initEngine(selectedScenario);
+  }, [selectedScenario]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -46,6 +40,14 @@ export const App = () => {
       if (engineRef.current && elapsedRealMs > 0) {
         const currentSimMs = engineRef.current.getSnapshot().timeMs;
         const targetSimMs = currentSimMs + elapsedRealMs * speed;
+
+        if (targetSimMs >= selectedScenario.durationMs) {
+          engineRef.current.advanceTo(selectedScenario.durationMs);
+          setSnapshot(engineRef.current.getSnapshot());
+          setIsRunning(false);
+          return;
+        }
+
         engineRef.current.advanceTo(targetSimMs);
         setSnapshot(engineRef.current.getSnapshot());
       }
@@ -55,7 +57,7 @@ export const App = () => {
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [isRunning, speed]);
+  }, [isRunning, speed, selectedScenario]);
 
   const handleTogglePlay = () => {
     setIsRunning((prev) => !prev);
@@ -64,13 +66,14 @@ export const App = () => {
   const handleStep100ms = () => {
     if (!engineRef.current) return;
     const current = engineRef.current.getSnapshot().timeMs;
-    engineRef.current.advanceTo(current + 100);
+    const target = Math.min(current + 100, selectedScenario.durationMs);
+    engineRef.current.advanceTo(target);
     setSnapshot(engineRef.current.getSnapshot());
   };
 
   const handleReset = () => {
     setIsRunning(false);
-    initEngine();
+    initEngine(selectedScenario);
   };
 
   const handleSlower = () => {
@@ -81,19 +84,45 @@ export const App = () => {
     setSpeed((s) => Math.min(3.0, Number((s + 0.1).toFixed(1))));
   };
 
+  const handleSelectScenario = (id: string) => {
+    const s = SCENARIOS.find((item) => item.id === id);
+    if (s) {
+      setIsRunning(false);
+      setSelectedScenario(s);
+    }
+  };
+
   if (!snapshot) {
     return <div>Initializing engine...</div>;
   }
 
-  return (
-    <div style={{ padding: '2rem', fontFamily: 'monospace', maxWidth: '800px' }}>
-      <h2>Dist Sim — Engine Foundation Preview</h2>
-      <p style={{ color: '#666' }}>
-        Healthy baseline traffic preview (Seed: 42 | Concurrency: 4 | Mean Service: 80ms | Arrival: 20 rps)
-      </p>
+  const isDegraded = snapshot.currentHealthSetting.latencyMultiplier > 1.0;
+  const isOutage = snapshot.currentHealthSetting.failureProbability > 0;
 
-      <div style={{ display: 'flex', gap: '0.75rem', margin: '1.5rem 0' }}>
-        <button onClick={handleTogglePlay} style={{ padding: '0.5rem 1rem', cursor: 'pointer' }}>
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'monospace', maxWidth: '850px' }}>
+      <h2>Dist Sim — Reliability Engineering Playground</h2>
+
+      {/* Scenario Selector */}
+      <div style={{ margin: '1rem 0' }}>
+        <label style={{ fontWeight: 'bold', marginRight: '0.5rem' }}>Select Scenario:</label>
+        <select
+          value={selectedScenario.id}
+          onChange={(e) => handleSelectScenario(e.target.value)}
+          style={{ padding: '0.4rem 0.8rem', fontSize: '0.95rem' }}
+        >
+          {SCENARIOS.map((sc) => (
+            <option key={sc.id} value={sc.id}>
+              {sc.title} ({sc.durationMs / 1000}s)
+            </option>
+          ))}
+        </select>
+        <p style={{ color: '#555', marginTop: '0.5rem' }}>{selectedScenario.description}</p>
+      </div>
+
+      {/* Control Strip */}
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', margin: '1.5rem 0' }}>
+        <button onClick={handleTogglePlay} style={{ padding: '0.5rem 1.25rem', cursor: 'pointer' }}>
           {isRunning ? 'Pause' : 'Play'}
         </button>
         <button onClick={handleStep100ms} style={{ padding: '0.5rem 1rem', cursor: 'pointer' }}>
@@ -113,40 +142,82 @@ export const App = () => {
         </div>
       </div>
 
-      <div style={{ background: '#f4f4f4', padding: '1rem', borderRadius: '6px' }}>
-        <div><strong>Simulated Time:</strong> {Math.round(snapshot.timeMs)} ms</div>
-        <div><strong>Total Arrivals:</strong> {snapshot.totalArrivals}</div>
-        <div><strong>Total Attempts:</strong> {snapshot.totalAttempts} ({snapshot.retryAttemptsCount} retries)</div>
-        <div><strong>Succeeded Requests:</strong> {snapshot.succeededRequestsCount}</div>
-        <div><strong>Failed Requests:</strong> {snapshot.failedRequestsCount}</div>
-        <div><strong>Timed-Out Attempts:</strong> {snapshot.timedOutAttemptsCount}</div>
-        <div><strong>Late / Wasted Work:</strong> {snapshot.lateCompletionCount}</div>
-        <div><strong>FIFO Queue Depth:</strong> {snapshot.queueDepth}</div>
-        <div><strong>Active Workers:</strong> {snapshot.activeWorkers} / {snapshot.workers.length}</div>
+      {/* Health Status Indicator */}
+      <div
+        style={{
+          padding: '0.6rem 1rem',
+          borderRadius: '4px',
+          marginBottom: '1rem',
+          background: isOutage ? '#ffebee' : isDegraded ? '#fff3e0' : '#e8f5e9',
+          color: isOutage ? '#c62828' : isDegraded ? '#ef6c00' : '#2e7d32',
+          fontWeight: 'bold',
+        }}
+      >
+        System Health:{' '}
+        {isOutage
+          ? 'OUTAGE (100% 5xx Failure Active)'
+          : isDegraded
+            ? `DEGRADED (${snapshot.currentHealthSetting.latencyMultiplier}x Latency Active)`
+            : 'HEALTHY'}
       </div>
 
+      {/* Metrics Card */}
+      <div style={{ background: '#f4f4f4', padding: '1rem', borderRadius: '6px' }}>
+        <div>
+          <strong>Simulated Time:</strong> {Math.round(snapshot.timeMs)} / {selectedScenario.durationMs} ms
+        </div>
+        <div>
+          <strong>Total Arrivals:</strong> {snapshot.totalArrivals}
+        </div>
+        <div>
+          <strong>Total Attempts:</strong> {snapshot.totalAttempts} ({snapshot.retryAttemptsCount} retries)
+        </div>
+        <div>
+          <strong>Succeeded Requests:</strong> {snapshot.succeededRequestsCount}
+        </div>
+        <div>
+          <strong>Failed Requests:</strong> {snapshot.failedRequestsCount}
+        </div>
+        <div>
+          <strong>5xx Service Errors:</strong> {snapshot.serviceErrorCount}
+        </div>
+        <div>
+          <strong>Timed-Out Attempts:</strong> {snapshot.timedOutAttemptsCount}
+        </div>
+        <div>
+          <strong>Late / Wasted Work:</strong> {snapshot.lateCompletionCount}
+        </div>
+        <div>
+          <strong>FIFO Queue Depth:</strong> {snapshot.queueDepth}
+        </div>
+        <div>
+          <strong>Active Workers:</strong> {snapshot.activeWorkers} / {snapshot.workers.length}
+        </div>
+      </div>
+
+      {/* Worker Slots */}
       <div style={{ marginTop: '1.5rem' }}>
-        <h4>Worker Slots:</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
+        <h4>Payment Service Worker Slots ({snapshot.workers.length} total):</h4>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${snapshot.workers.length}, 1fr)`, gap: '0.5rem' }}>
           {snapshot.workers.map((w) => (
             <div
               key={w.id}
               style={{
                 border: '1px solid #ccc',
-                padding: '0.75rem',
+                padding: '0.5rem',
                 borderRadius: '4px',
+                textAlign: 'center',
                 background: w.busy ? '#e0f7fa' : '#fafafa',
               }}
             >
-              <div><strong>Worker {w.id}</strong></div>
-              <div>Status: {w.busy ? 'BUSY' : 'IDLE'}</div>
+              <div><strong>#{w.id}</strong></div>
+              <div style={{ fontSize: '0.85em', color: w.busy ? '#00796b' : '#757575' }}>
+                {w.busy ? 'BUSY' : 'IDLE'}
+              </div>
               {w.busy && (
-                <>
-                  <div style={{ fontSize: '0.85em' }}>Attempt: #{w.currentAttemptId}</div>
-                  <div style={{ fontSize: '0.85em' }}>
-                    Finishes: {Math.round(w.finishesAtMs || 0)} ms
-                  </div>
-                </>
+                <div style={{ fontSize: '0.75em', marginTop: '0.25rem' }}>
+                  Att #{w.currentAttemptId}
+                </div>
               )}
             </div>
           ))}

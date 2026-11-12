@@ -10,8 +10,7 @@ describe('SimulationEngine Baseline & Concurrency', () => {
       concurrency,
       meanServiceMs: 200,
       timeoutMs: 500,
-      retryPolicy: 'none',
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none', maxAttempts: 1 },
     });
 
     for (let t = 50; t <= 3000; t += 50) {
@@ -28,8 +27,7 @@ describe('SimulationEngine Baseline & Concurrency', () => {
       concurrency: 1,
       meanServiceMs: 100,
       timeoutMs: 1000,
-      retryPolicy: 'none',
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none', maxAttempts: 1 },
     });
 
     engine.advanceTo(500);
@@ -47,8 +45,7 @@ describe('SimulationEngine Baseline & Concurrency', () => {
       concurrency: 4,
       meanServiceMs: 50,
       timeoutMs: 200,
-      retryPolicy: 'none' as const,
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none' as const, maxAttempts: 1 },
     };
 
     const engine1 = createSimulation(baseConfig);
@@ -67,8 +64,7 @@ describe('SimulationEngine Baseline & Concurrency', () => {
       concurrency: 2,
       meanServiceMs: 80,
       timeoutMs: 150,
-      retryPolicy: 'none' as const,
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none' as const, maxAttempts: 1 },
     };
 
     const engineA = createSimulation(config);
@@ -85,15 +81,13 @@ describe('SimulationEngine Baseline & Concurrency', () => {
 
 describe('SimulationEngine Timeouts, Late Work & Retries', () => {
   it('triggers client timeout when service duration exceeds timeout deadline', () => {
-    // Mean service 100ms, timeout 50ms -> service will definitely exceed timeout
     const engine = createSimulation({
       seed: 1,
       arrivalRateRps: 10,
       concurrency: 2,
       meanServiceMs: 100,
       timeoutMs: 50,
-      retryPolicy: 'none',
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none', maxAttempts: 1 },
     });
 
     engine.advanceTo(70);
@@ -104,19 +98,15 @@ describe('SimulationEngine Timeouts, Late Work & Retries', () => {
   });
 
   it('does NOT cancel server work on timeout: worker stays occupied and late completion is counted', () => {
-    // 1 worker, 100ms service, 30ms timeout.
-    // The attempt times out at 30ms, but worker finishes ~100ms.
     const engine = createSimulation({
       seed: 42,
-      arrivalRateRps: 0, // no subsequent arrivals; only the initial arrival at t=0
+      arrivalRateRps: 0,
       concurrency: 1,
       meanServiceMs: 100,
       timeoutMs: 30,
-      retryPolicy: 'none',
-      maxAttempts: 1,
+      retryPolicy: { mode: 'none', maxAttempts: 1 },
     });
 
-    // At t = 50ms: attempt has timed out, but worker must STILL be busy processing it!
     engine.advanceTo(50);
     const at50 = engine.getSnapshot();
     expect(at50.timedOutAttemptsCount).toBe(1);
@@ -125,33 +115,27 @@ describe('SimulationEngine Timeouts, Late Work & Retries', () => {
     expect(at50.failedRequestsCount).toBe(1);
     expect(at50.succeededRequestsCount).toBe(0);
 
-    // At t = 150ms: worker finishes late work
     engine.advanceTo(150);
     const at150 = engine.getSnapshot();
     expect(at150.activeWorkers).toBe(0);
     expect(at150.lateCompletionCount).toBe(1);
-    // Late completion must NOT turn failed request into success!
     expect(at150.succeededRequestsCount).toBe(0);
     expect(at150.failedRequestsCount).toBe(1);
   });
 
   it('immediate retry policy dispatches retry attempts up to maxAttempts', () => {
-    // 1 arrival at t=0, service ~100ms, timeout 20ms, maxAttempts = 3
     const engine = createSimulation({
       seed: 42,
       arrivalRateRps: 0,
       concurrency: 1,
       meanServiceMs: 100,
       timeoutMs: 20,
-      retryPolicy: 'immediate',
-      maxAttempts: 3,
+      retryPolicy: { mode: 'immediate', maxAttempts: 3 },
     });
 
-    // Advance to 100ms: attempt 1 times out at 20ms, attempt 2 at 40ms, attempt 3 at 60ms
     engine.advanceTo(100);
     const snap = engine.getSnapshot();
 
-    // Exactly 3 total attempts created (original + 2 retries)
     expect(snap.totalAttempts).toBe(3);
     expect(snap.retryAttemptsCount).toBe(2);
     expect(snap.timedOutAttemptsCount).toBe(3);

@@ -1,13 +1,14 @@
 import { PriorityQueue } from './priorityQueue';
 import { SimulationRandom } from './random';
+import { calculateRetryDelayMs } from './retryPolicy';
 import {
   Attempt,
   EngineConfig,
   EngineSnapshot,
   EventPriority,
   LogicalRequest,
-  ServiceProfile,
   SimulationEvent,
+  SystemHealthSetting,
   WorkerSlot,
 } from './types';
 
@@ -33,16 +34,16 @@ export class SimulationEngine {
   private retryAttemptsCount: number = 0;
   private succeededRequestsCount: number = 0;
   private failedRequestsCount: number = 0;
+  private serviceErrorCount: number = 0;
 
-  private activeProfile: ServiceProfile;
+  private currentHealthSetting: SystemHealthSetting = {
+    latencyMultiplier: 1.0,
+    failureProbability: 0.0,
+  };
 
   constructor(config: EngineConfig) {
     this.config = config;
     this.rng = new SimulationRandom(config.seed);
-    this.activeProfile = {
-      meanServiceMs: config.meanServiceMs,
-      failureProbability: 0,
-    };
 
     // Initialize worker pool
     for (let i = 0; i < config.concurrency; i++) {
@@ -52,12 +53,37 @@ export class SimulationEngine {
       });
     }
 
-    // Schedule the very first logical arrival at t = 0
-    this.scheduleEvent({
-      type: 'LOGICAL_ARRIVAL',
-      atMs: 0,
-      priority: EventPriority.LOGICAL_ARRIVAL,
-    });
+    // Schedule any fault/health setting phases
+    if (config.scheduledPhases) {
+      for (const phase of config.scheduledPhases) {
+        this.scheduleEvent({
+          type: 'HEALTH_SETTING_CHANGE',
+          atMs: phase.atMs,
+          priority: EventPriority.HEALTH_SETTING_CHANGE,
+          healthSetting: phase.healthSetting,
+        });
+      }
+    }
+
+    // Schedule steady Poisson traffic or default initial arrival if not in burst mode
+    if (!config.burstArrivals) {
+      this.scheduleEvent({
+        type: 'LOGICAL_ARRIVAL',
+        atMs: 0,
+        priority: EventPriority.LOGICAL_ARRIVAL,
+      });
+    }
+
+    // Schedule one-time traffic burst if configured
+    if (config.burstArrivals && config.burstArrivals.count > 0) {
+      for (let i = 0; i < config.burstArrivals.count; i++) {
+        this.scheduleEvent({
+          type: 'LOGICAL_ARRIVAL',
+          atMs: config.burstArrivals.atMs,
+          priority: EventPriority.LOGICAL_ARRIVAL,
+        });
+      }
+    }
   }
 
   public advanceTo = (targetTimeMs: number): void => {
@@ -99,6 +125,8 @@ export class SimulationEngine {
       retryAttemptsCount: this.retryAttemptsCount,
       succeededRequestsCount: this.succeededRequestsCount,
       failedRequestsCount: this.failedRequestsCount,
+      serviceErrorCount: this.serviceErrorCount,
+      currentHealthSetting: { ...this.currentHealthSetting },
     };
   };
 
@@ -111,6 +139,7 @@ export class SimulationEngine {
           priority: EventPriority.ATTEMPT_DISPATCH;
           logicalRequestId: number;
           attemptNumber: number;
+          isRetry: boolean;
         }
       | {
           type: 'SERVICE_COMPLETE';
@@ -125,6 +154,12 @@ export class SimulationEngine {
           atMs: number;
           priority: EventPriority.ATTEMPT_TIMEOUT;
           attemptId: number;
+        }
+      | {
+          type: 'HEALTH_SETTING_CHANGE';
+          atMs: number;
+          priority: EventPriority.HEALTH_SETTING_CHANGE;
+          healthSetting: SystemHealthSetting;
         }
       | {
           type: 'METRICS_SAMPLE';
@@ -145,11 +180,17 @@ export class SimulationEngine {
       case 'LOGICAL_ARRIVAL':
         this.handleLogicalArrival();
         break;
+      case 'ATTEMPT_DISPATCH':
+        this.dispatchAttempt(event.logicalRequestId, event.attemptNumber, event.isRetry);
+        break;
       case 'SERVICE_COMPLETE':
         this.handleServiceComplete(event.workerId, event.attemptId, event.succeeded);
         break;
       case 'ATTEMPT_TIMEOUT':
         this.handleAttemptTimeout(event.attemptId);
+        break;
+      case 'HEALTH_SETTING_CHANGE':
+        this.currentHealthSetting = { ...event.healthSetting };
         break;
       default:
         break;
@@ -166,10 +207,10 @@ export class SimulationEngine {
     };
     this.logicalRequests.set(reqId, request);
 
-    // Dispatch the first attempt
+    // Dispatch Attempt #1
     this.dispatchAttempt(reqId, 1, false);
 
-    // Schedule next logical arrival using Poisson inter-arrival
+    // Schedule next Poisson arrival if running steady traffic
     if (this.config.arrivalRateRps > 0) {
       const deltaMs = this.rng.get('arrival').nextExponential(this.config.arrivalRateRps);
       this.scheduleEvent({
@@ -185,6 +226,12 @@ export class SimulationEngine {
     attemptNumber: number,
     isRetry: boolean
   ): void => {
+    const request = this.logicalRequests.get(logicalRequestId);
+    if (!request || request.state !== 'pending') {
+      // If the request already succeeded or was cancelled, do not dispatch
+      return;
+    }
+
     const attemptId = this.nextAttemptId++;
     const deadlineAtMs = this.currentTimeMs + this.config.timeoutMs;
 
@@ -205,7 +252,7 @@ export class SimulationEngine {
       this.retryAttemptsCount++;
     }
 
-    // Schedule the client timeout deadline
+    // Schedule timeout deadline
     this.scheduleEvent({
       type: 'ATTEMPT_TIMEOUT',
       atMs: deadlineAtMs,
@@ -213,7 +260,7 @@ export class SimulationEngine {
       attemptId,
     });
 
-    // Enqueue for server processing and attempt drain
+    // Enqueue for worker processing
     this.fifoQueue.push(attemptId);
     this.drainQueue();
   };
@@ -221,43 +268,24 @@ export class SimulationEngine {
   private handleAttemptTimeout = (attemptId: number): void => {
     const attempt = this.attempts.get(attemptId);
     if (!attempt || attempt.clientState !== 'waiting') {
-      // Already completed on time (or already resolved)
       return;
     }
 
-    // Mark client state as timed out
     attempt.clientState = 'timed_out';
     this.timedOutAttemptsCount++;
-
-    // Crucial: Server work is NOT cancelled!
-    // The attempt remains in fifoQueue or actively processing on its worker.
 
     const request = this.logicalRequests.get(attempt.logicalRequestId);
     if (!request || request.state !== 'pending') {
       return;
     }
 
-    // Evaluate retry policy
-    const canRetry =
-      this.config.retryPolicy === 'immediate' &&
-      request.attemptsCreated < this.config.maxAttempts;
-
-    if (canRetry) {
-      request.attemptsCreated++;
-      this.dispatchAttempt(request.id, request.attemptsCreated, true);
-    } else {
-      // No more retries allowed -> terminal failure
-      request.state = 'failed';
-      request.failureReason = 'timeout';
-      request.completedAtMs = this.currentTimeMs;
-      this.failedRequestsCount++;
-    }
+    this.evaluateRetryOrFailure(request, 'timeout');
   };
 
   private handleServiceComplete = (
     workerId: number,
     attemptId: number,
-    _succeeded: boolean
+    succeeded: boolean
   ): void => {
     const worker = this.workers[workerId];
     if (worker) {
@@ -272,25 +300,66 @@ export class SimulationEngine {
       attempt.serverState = 'completed';
 
       if (attempt.clientState === 'timed_out') {
-        // Late work / wasted work! The client already gave up on this attempt.
+        // Late / wasted work: client already timed out
         this.lateCompletionCount++;
       } else if (attempt.clientState === 'waiting') {
-        // On-time timely completion!
-        attempt.clientState = 'succeeded';
-
         const request = this.logicalRequests.get(attempt.logicalRequestId);
-        if (request && request.state === 'pending') {
-          request.state = 'succeeded';
-          request.completedAtMs = this.currentTimeMs;
-          this.succeededRequestsCount++;
+
+        if (succeeded) {
+          // Successful response
+          attempt.clientState = 'succeeded';
+          if (request && request.state === 'pending') {
+            request.state = 'succeeded';
+            request.completedAtMs = this.currentTimeMs;
+            this.succeededRequestsCount++;
+          }
+        } else {
+          // 5xx service failure
+          attempt.clientState = 'failed';
+          this.serviceErrorCount++;
+          if (request && request.state === 'pending') {
+            this.evaluateRetryOrFailure(request, 'service_error');
+          }
         }
       }
     }
 
     this.completedServiceCount++;
-
-    // Worker freed: drain queue to pick up next waiting attempt
     this.drainQueue();
+  };
+
+  private evaluateRetryOrFailure = (
+    request: LogicalRequest,
+    failureReason: 'timeout' | 'service_error'
+  ): void => {
+    const policy = this.config.retryPolicy;
+    const canRetry = policy.mode !== 'none' && request.attemptsCreated < policy.maxAttempts;
+
+    if (canRetry) {
+      const retryNumber = request.attemptsCreated; // 1 for first retry, 2 for second
+      request.attemptsCreated++;
+
+      const delayMs = calculateRetryDelayMs(policy, retryNumber, this.rng.get('jitter'));
+
+      if (delayMs === 0) {
+        this.dispatchAttempt(request.id, request.attemptsCreated, true);
+      } else {
+        this.scheduleEvent({
+          type: 'ATTEMPT_DISPATCH',
+          atMs: this.currentTimeMs + delayMs,
+          priority: EventPriority.ATTEMPT_DISPATCH,
+          logicalRequestId: request.id,
+          attemptNumber: request.attemptsCreated,
+          isRetry: true,
+        });
+      }
+    } else {
+      // Terminal failure
+      request.state = 'failed';
+      request.failureReason = failureReason;
+      request.completedAtMs = this.currentTimeMs;
+      this.failedRequestsCount++;
+    }
   };
 
   private drainQueue = (): void => {
@@ -303,14 +372,16 @@ export class SimulationEngine {
       const attemptId = this.fifoQueue.shift()!;
       const attempt = this.attempts.get(attemptId)!;
 
-      // Sample service duration at the moment work begins
-      const durationMs = this.rng
-        .get('service')
-        .nextBoundedUniform(this.activeProfile.meanServiceMs);
-
+      // Sample service duration with active latencyMultiplier
+      const baseMean = this.config.meanServiceMs * this.currentHealthSetting.latencyMultiplier;
+      const durationMs = this.rng.get('service').nextBoundedUniform(baseMean);
       const finishesAtMs = this.currentTimeMs + durationMs;
 
-      // Assign worker
+      // Sample 5xx failure probability
+      const hasFailure = this.rng
+        .get('failure')
+        .nextBoolean(this.currentHealthSetting.failureProbability);
+
       idleWorker.busy = true;
       idleWorker.currentAttemptId = attemptId;
       idleWorker.startedAtMs = this.currentTimeMs;
@@ -318,14 +389,13 @@ export class SimulationEngine {
 
       attempt.serverState = 'processing';
 
-      // Schedule completion
       this.scheduleEvent({
         type: 'SERVICE_COMPLETE',
         atMs: finishesAtMs,
         priority: EventPriority.SERVICE_COMPLETE,
         workerId: idleWorker.id,
         attemptId,
-        succeeded: true,
+        succeeded: !hasFailure,
       });
     }
   };

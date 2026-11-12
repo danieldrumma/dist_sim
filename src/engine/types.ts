@@ -1,7 +1,9 @@
+import { RetryPolicyConfig } from './retryPolicy';
+
 export enum EventPriority {
   SERVICE_COMPLETE = 1,
   ATTEMPT_TIMEOUT = 2,
-  PROFILE_CHANGE = 3,
+  HEALTH_SETTING_CHANGE = 3,
   BREAKER_COOLDOWN_EXPIRED = 3,
   LOGICAL_ARRIVAL = 4,
   ATTEMPT_DISPATCH = 4,
@@ -52,6 +54,11 @@ export interface WorkerSlot {
   finishesAtMs?: number;
 }
 
+export interface SystemHealthSetting {
+  latencyMultiplier: number; // 1.0 = normal healthy, 3.0 = 3x degraded
+  failureProbability: number; // 0.0 = normal, 1.0 = 100% simulated 5xx errors
+}
+
 export type SimulationEvent =
   | {
       type: 'LOGICAL_ARRIVAL';
@@ -66,6 +73,7 @@ export type SimulationEvent =
       insertionSeq: number;
       logicalRequestId: number;
       attemptNumber: number;
+      isRetry: boolean;
     }
   | {
       type: 'SERVICE_COMPLETE';
@@ -84,18 +92,23 @@ export type SimulationEvent =
       attemptId: number;
     }
   | {
+      type: 'HEALTH_SETTING_CHANGE';
+      atMs: number;
+      priority: EventPriority.HEALTH_SETTING_CHANGE;
+      insertionSeq: number;
+      healthSetting: SystemHealthSetting;
+    }
+  | {
       type: 'METRICS_SAMPLE';
       atMs: number;
       priority: EventPriority.METRICS_SAMPLE;
       insertionSeq: number;
     };
 
-export interface ServiceProfile {
-  meanServiceMs: number;
-  failureProbability: number;
+export interface ScheduledHealthPhase {
+  atMs: number;
+  healthSetting: SystemHealthSetting;
 }
-
-export type RetryPolicyType = 'none' | 'immediate';
 
 export interface EngineConfig {
   seed: number;
@@ -103,8 +116,9 @@ export interface EngineConfig {
   concurrency: number;
   meanServiceMs: number;
   timeoutMs: number;
-  retryPolicy: RetryPolicyType;
-  maxAttempts: number;
+  retryPolicy: RetryPolicyConfig;
+  scheduledPhases?: ScheduledHealthPhase[];
+  burstArrivals?: { atMs: number; count: number }; // For Scenario 2 (burst of 48 requests)
 }
 
 export interface EngineSnapshot {
@@ -121,4 +135,6 @@ export interface EngineSnapshot {
   retryAttemptsCount: number;
   succeededRequestsCount: number;
   failedRequestsCount: number;
+  serviceErrorCount: number;
+  currentHealthSetting: SystemHealthSetting;
 }
