@@ -1,12 +1,14 @@
+import { memo } from 'react';
 import { MetricSample } from '../engine/metrics';
 import styles from './TimeSeriesChart.module.css';
 
 interface TimeSeriesChartProps {
   samples: MetricSample[];
+  sampleCount: number;
   maxDurationMs: number;
 }
 
-export const TimeSeriesChart = ({ samples, maxDurationMs }: TimeSeriesChartProps) => {
+const TimeSeriesChartView = ({ samples, maxDurationMs }: TimeSeriesChartProps) => {
   if (samples.length < 2) {
     return (
       <div className={styles.emptyState}>
@@ -137,3 +139,10 @@ export const TimeSeriesChart = ({ samples, maxDurationMs }: TimeSeriesChartProps
     </div>
   );
 };
+
+export const TimeSeriesChart = memo(
+  TimeSeriesChartView,
+  (previous, next) =>
+    previous.sampleCount === next.sampleCount &&
+    previous.maxDurationMs === next.maxDurationMs
+);

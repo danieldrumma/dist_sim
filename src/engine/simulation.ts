@@ -26,10 +26,13 @@ export class SimulationEngine {
   private logicalRequests: Map<number, LogicalRequest> = new Map();
   private attempts: Map<number, Attempt> = new Map();
   private fifoQueue: number[] = [];
+  private fifoQueueHead: number = 0;
   private workers: WorkerSlot[] = [];
 
   private nextLogicalRequestId: number = 1;
   private nextAttemptId: number = 1;
+  private totalArrivalCount: number = 0;
+  private totalAttemptCount: number = 0;
 
   // Outcome and event counters
   private completedServiceCount: number = 0;
@@ -104,6 +107,10 @@ export class SimulationEngine {
     });
   }
 
+  /**
+   * Advances the simulation through all events up to targetTimeMs.
+   * Requests earlier than the current simulation time are ignored.
+   */
   public advanceTo = (targetTimeMs: number): void => {
     if (targetTimeMs < this.currentTimeMs) {
       return;
@@ -128,6 +135,8 @@ export class SimulationEngine {
     this.pendingLogs = [];
     return drained;
   };
+
+  public getCurrentTimeMs = (): number => this.currentTimeMs;
 
   private emitLog = (
     category: import('./types').EngineLogEntry['category'],
@@ -155,12 +164,12 @@ export class SimulationEngine {
 
     return {
       timeMs: this.currentTimeMs,
-      queueDepth: this.fifoQueue.length,
-      queuedAttemptIds: [...this.fifoQueue],
+      queueDepth: this.fifoQueue.length - this.fifoQueueHead,
+      queuedAttemptIds: this.fifoQueue.slice(this.fifoQueueHead),
       activeWorkers,
       workers: this.workers.map((w) => ({ ...w })),
-      totalArrivals: this.logicalRequests.size,
-      totalAttempts: this.attempts.size,
+      totalArrivals: this.totalArrivalCount,
+      totalAttempts: this.totalAttemptCount,
       completedServiceCount: this.completedServiceCount,
       timedOutAttemptsCount: this.timedOutAttemptsCount,
       lateCompletionCount: this.lateCompletionCount,
@@ -275,6 +284,7 @@ export class SimulationEngine {
       attemptsCreated: 1,
     };
     this.logicalRequests.set(reqId, request);
+    this.totalArrivalCount++;
     this.metrics.recordArrival(this.currentTimeMs);
     this.emitLog('INGRESS', 'info', `Logical Request #${reqId} admitted`);
 
@@ -307,18 +317,7 @@ export class SimulationEngine {
     if (!check.allowed) {
       // Breaker is OPEN (or HALF_OPEN probe in-flight): short-circuit!
       const attemptId = this.nextAttemptId++;
-      const rejectedAttempt: Attempt = {
-        id: attemptId,
-        logicalRequestId,
-        attemptNumber,
-        dispatchedAtMs: this.currentTimeMs,
-        deadlineAtMs: this.currentTimeMs,
-        clientState: 'rejected',
-        serverState: 'not_admitted',
-        isRetry,
-        isHalfOpenProbe: false,
-      };
-      this.attempts.set(attemptId, rejectedAttempt);
+      this.totalAttemptCount++;
 
       this.transitParticles.push({
         attemptId,
@@ -334,6 +333,7 @@ export class SimulationEngine {
       request.failureReason = 'circuit_open';
       request.completedAtMs = this.currentTimeMs;
       this.failedRequestsCount++;
+      this.releaseRequestIfTerminal(request);
       return;
     }
 
@@ -353,6 +353,7 @@ export class SimulationEngine {
       isHalfOpenProbe: check.isHalfOpenProbe,
     };
     this.attempts.set(attemptId, attempt);
+    this.totalAttemptCount++;
 
     this.transitParticles.push({
       attemptId,
@@ -410,6 +411,7 @@ export class SimulationEngine {
     }
 
     this.evaluateRetryOrFailure(request, 'timeout');
+    this.releaseRequestIfTerminal(request);
   };
 
   private handleServiceComplete = (
@@ -444,6 +446,7 @@ export class SimulationEngine {
             request.state = 'succeeded';
             request.completedAtMs = this.currentTimeMs;
             this.succeededRequestsCount++;
+            this.releaseRequestIfTerminal(request);
           }
         } else {
           attempt.clientState = 'failed';
@@ -462,12 +465,14 @@ export class SimulationEngine {
 
           if (request && request.state === 'pending') {
             this.evaluateRetryOrFailure(request, 'service_error');
+            this.releaseRequestIfTerminal(request);
           }
         }
       }
     }
 
     this.completedServiceCount++;
+    this.attempts.delete(attemptId);
     this.drainQueue();
   };
 
@@ -479,7 +484,7 @@ export class SimulationEngine {
 
     this.metrics.takeSample(
       this.currentTimeMs,
-      this.fifoQueue.length,
+      this.fifoQueue.length - this.fifoQueueHead,
       activeWorkers,
       this.workers.length,
       this.lateCompletionCount,
@@ -527,14 +532,20 @@ export class SimulationEngine {
     }
   };
 
+  private releaseRequestIfTerminal = (request: LogicalRequest): void => {
+    if (request.state !== 'pending') {
+      this.logicalRequests.delete(request.id);
+    }
+  };
+
   private drainQueue = (): void => {
-    while (this.fifoQueue.length > 0) {
+    while (this.fifoQueueHead < this.fifoQueue.length) {
       const idleWorker = this.findIdleWorker();
       if (!idleWorker) {
         break;
       }
 
-      const attemptId = this.fifoQueue.shift()!;
+      const attemptId = this.fifoQueue[this.fifoQueueHead++];
       const attempt = this.attempts.get(attemptId)!;
 
       const baseMean = this.config.meanServiceMs * this.currentHealthSetting.latencyMultiplier;
@@ -560,6 +571,19 @@ export class SimulationEngine {
         attemptId,
         succeeded: !hasFailure,
       });
+
+      this.compactFifoQueue();
+    }
+  };
+
+  private compactFifoQueue = (): void => {
+    if (this.fifoQueueHead > 1024 && this.fifoQueueHead * 2 >= this.fifoQueue.length) {
+      this.fifoQueue = this.fifoQueue.slice(this.fifoQueueHead);
+      this.fifoQueueHead = 0;
+    } else if (this.fifoQueueHead === this.fifoQueue.length) {
+      // Reset an exhausted small queue so it does not retain stale ids.
+      this.fifoQueue = [];
+      this.fifoQueueHead = 0;
     }
   };
 

@@ -23,6 +23,9 @@ export class MetricsCollector {
   private ingressTimestamps: number[] = [];
   private attemptTimestamps: number[] = [];
   private retryTimestamps: number[] = [];
+  private ingressHead = 0;
+  private attemptHead = 0;
+  private retryHead = 0;
 
   private samples: MetricSample[] = [];
 
@@ -59,9 +62,9 @@ export class MetricsCollector {
   ): MetricSample => {
     this.pruneWindows(timeMs);
 
-    const ingressRps = this.ingressTimestamps.length;
-    const attemptRps = this.attemptTimestamps.length;
-    const retryRps = this.retryTimestamps.length;
+    const ingressRps = this.ingressTimestamps.length - this.ingressHead;
+    const attemptRps = this.attemptTimestamps.length - this.attemptHead;
+    const retryRps = this.retryTimestamps.length - this.retryHead;
 
     const workerUtilization =
       totalConcurrency > 0 ? Number((activeWorkers / totalConcurrency).toFixed(2)) : 0;
@@ -91,6 +94,9 @@ export class MetricsCollector {
     this.ingressTimestamps = [];
     this.attemptTimestamps = [];
     this.retryTimestamps = [];
+    this.ingressHead = 0;
+    this.attemptHead = 0;
+    this.retryHead = 0;
     this.samples = [];
     this.nextSampleAtMs = 0;
   };
@@ -98,15 +104,31 @@ export class MetricsCollector {
   private pruneWindows = (currentTimeMs: number): void => {
     const cutoff = currentTimeMs - this.windowMs;
 
-    while (this.ingressTimestamps.length > 0 && this.ingressTimestamps[0] < cutoff) {
-      this.ingressTimestamps.shift();
+    this.ingressHead = this.advanceHead(this.ingressTimestamps, this.ingressHead, cutoff);
+    this.attemptHead = this.advanceHead(this.attemptTimestamps, this.attemptHead, cutoff);
+    this.retryHead = this.advanceHead(this.retryTimestamps, this.retryHead, cutoff);
+    this.compactTimestamps();
+  };
+
+  private advanceHead = (timestamps: number[], head: number, cutoff: number): number => {
+    while (head < timestamps.length && timestamps[head] < cutoff) {
+      head++;
     }
-    while (this.attemptTimestamps.length > 0 && this.attemptTimestamps[0] < cutoff) {
-      this.attemptTimestamps.shift();
-    }
-    while (this.retryTimestamps.length > 0 && this.retryTimestamps[0] < cutoff) {
-      this.retryTimestamps.shift();
-    }
+    return head;
+  };
+
+  private compactTimestamps = (): void => {
+    const compact = (timestamps: number[], head: number): [number[], number] => {
+      // Reclaim old entries occasionally without shifting on every prune.
+      if (head > 1024 && head * 2 >= timestamps.length) {
+        return [timestamps.slice(head), 0];
+      }
+      return [timestamps, head];
+    };
+
+    [this.ingressTimestamps, this.ingressHead] = compact(this.ingressTimestamps, this.ingressHead);
+    [this.attemptTimestamps, this.attemptHead] = compact(this.attemptTimestamps, this.attemptHead);
+    [this.retryTimestamps, this.retryHead] = compact(this.retryTimestamps, this.retryHead);
   };
 }
 

@@ -77,6 +77,24 @@ describe('SimulationEngine Baseline & Concurrency', () => {
 
     expect(engineA.getSnapshot()).toEqual(engineB.getSnapshot());
   });
+
+  it('ignores advanceTo calls earlier than the current simulation time', () => {
+    const engine = createSimulation({
+      seed: 42,
+      arrivalRateRps: 0,
+      concurrency: 1,
+      meanServiceMs: 100,
+      timeoutMs: 500,
+      retryPolicy: { mode: 'none', maxAttempts: 1 },
+    });
+
+    engine.advanceTo(500);
+    const beforeBackwardsAdvance = engine.getSnapshot();
+
+    engine.advanceTo(250);
+
+    expect(engine.getSnapshot()).toEqual(beforeBackwardsAdvance);
+  });
 });
 
 describe('SimulationEngine Timeouts, Late Work & Retries', () => {
@@ -140,5 +158,42 @@ describe('SimulationEngine Timeouts, Late Work & Retries', () => {
     expect(snap.retryAttemptsCount).toBe(2);
     expect(snap.timedOutAttemptsCount).toBe(3);
     expect(snap.failedRequestsCount).toBe(1);
+  });
+
+  it('keeps a timed-out request failed when its worker completes after the breaker opens', () => {
+    const engine = createSimulation({
+      seed: 42,
+      arrivalRateRps: 0,
+      concurrency: 1,
+      meanServiceMs: 100,
+      timeoutMs: 30,
+      retryPolicy: { mode: 'immediate', maxAttempts: 2 },
+      circuitBreaker: { enabled: true, failureThreshold: 1, openDurationMs: 1000 },
+    });
+
+    // The timeout opens the breaker. The immediate retry is rejected, while
+    // the original server work continues until its later completion event.
+    engine.advanceTo(30);
+    const afterTimeout = engine.getSnapshot();
+    expect(afterTimeout.breakerState).toBe('OPEN');
+    expect(afterTimeout.timedOutAttemptsCount).toBe(1);
+    expect(afterTimeout.shortCircuitedCount).toBe(1);
+    expect(afterTimeout.failedRequestsCount).toBe(1);
+
+    engine.advanceTo(200);
+    const afterLateCompletion = engine.getSnapshot();
+    expect(afterLateCompletion.breakerState).toBe('OPEN');
+    expect(afterLateCompletion.lateCompletionCount).toBe(1);
+    expect(afterLateCompletion.succeededRequestsCount).toBe(0);
+    expect(afterLateCompletion.failedRequestsCount).toBe(1);
+    expect(afterLateCompletion.totalArrivals).toBe(1);
+    expect(afterLateCompletion.totalAttempts).toBe(2);
+
+    const retainedRecords = engine as unknown as {
+      logicalRequests: Map<number, unknown>;
+      attempts: Map<number, unknown>;
+    };
+    expect(retainedRecords.logicalRequests.size).toBe(0);
+    expect(retainedRecords.attempts.size).toBe(0);
   });
 });

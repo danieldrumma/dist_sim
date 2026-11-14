@@ -77,4 +77,50 @@ describe('PriorityQueue', () => {
     expect(pq.pop()?.insertionSeq).toBe(2);
     expect(pq.pop()?.insertionSeq).toBe(5);
   });
+
+  it('orders a mixed timestamp collision by priority, then insertion order', () => {
+    const pq = new PriorityQueue();
+    const atMs = 250;
+
+    // Insert in an order different from the expected pop order. Events with
+    // equal timestamps use lower priority values first, then insertionSeq.
+    pq.push({
+      type: 'LOGICAL_ARRIVAL',
+      atMs,
+      priority: EventPriority.LOGICAL_ARRIVAL,
+      insertionSeq: 1,
+    });
+    pq.push({
+      type: 'ATTEMPT_TIMEOUT',
+      atMs,
+      priority: EventPriority.ATTEMPT_TIMEOUT,
+      insertionSeq: 3,
+      attemptId: 1,
+    });
+    pq.push({
+      type: 'SERVICE_COMPLETE',
+      atMs,
+      priority: EventPriority.SERVICE_COMPLETE,
+      insertionSeq: 4,
+      workerId: 0,
+      attemptId: 1,
+      succeeded: true,
+    });
+    pq.push({
+      type: 'ATTEMPT_DISPATCH',
+      atMs,
+      priority: EventPriority.ATTEMPT_DISPATCH,
+      insertionSeq: 2,
+      logicalRequestId: 2,
+      attemptNumber: 1,
+      isRetry: false,
+    });
+
+    expect([pq.pop()?.type, pq.pop()?.type, pq.pop()?.type, pq.pop()?.type]).toEqual([
+      'SERVICE_COMPLETE',
+      'ATTEMPT_TIMEOUT',
+      'LOGICAL_ARRIVAL',
+      'ATTEMPT_DISPATCH',
+    ]);
+  });
 });

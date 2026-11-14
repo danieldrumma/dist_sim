@@ -36,4 +36,21 @@ describe('MetricsCollector', () => {
     expect(sample.attemptRps).toBe(3);
     expect(sample.retryRps).toBe(1);
   });
+
+  it('prunes old rate events while retaining full-run samples', () => {
+    const metrics = createMetricsCollector(250, 1000);
+
+    for (let i = 0; i < 1100; i++) {
+      metrics.recordArrival(0);
+    }
+    for (let i = 0; i < 50; i++) {
+      metrics.recordArrival(1001);
+    }
+
+    const laterSample = metrics.takeSample(1001, 0, 0, 1, 0, 0);
+    expect(laterSample.ingressRps).toBe(50);
+
+    metrics.takeSample(1251, 0, 0, 1, 0, 0);
+    expect(metrics.getSamples()).toHaveLength(2);
+  });
 });
